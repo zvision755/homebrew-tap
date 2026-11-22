@@ -20,6 +20,11 @@ cask "mister-download-manager" do
   app "Mister Download Manager.app"
   binary "#{appdir}/Mister Download Manager.app/Contents/MacOS/misterdownloadmanager-cli", target: "mdm"
 
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Mister Download Manager.app"]
+  end
+
   uninstall quit: "io.github.anefzaoui.misterdownloadmanager"
 
   zap trash: [
@@ -31,7 +36,7 @@ cask "mister-download-manager" do
 
   caveats <<~EOS
     Mister Download Manager for macOS is currently experimental and ad-hoc signed (not notarized by Apple).
-    On first launch, if macOS Gatekeeper blocks it, open System Settings -> Privacy & Security -> Open Anyway.
+    This cask verifies the official SHA-256 checksum and clears com.apple.quarantine on Mister Download Manager.app only.
     To keep Homebrew as the single update source, turn off "Check for updates at every start" in Help -> Check for updates.
   EOS
 end
