@@ -1,0 +1,96 @@
+name: Update Mister Download Manager Cask
+
+on:
+  schedule:
+    - cron: "15 6 * * *" # Daily at 06:15 UTC (14:15 CST)
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-cask:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check latest release and update cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - << 'PY'
+          import json, pathlib, re, subprocess, sys, urllib.request
+
+          cask_path = pathlib.Path("Casks/mister-download-manager.rb")
+          content = cask_path.read_text(encoding="utf-8")
+
+          req = urllib.request.Request(
+              "https://api.github.com/repos/anefzaoui/misterdownloadmanager/releases/latest",
+              headers={"Accept": "application/vnd.github+json", "User-Agent": "homebrew-tap-updater"},
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              release = json.load(resp)
+
+          tag = release["tag_name"]
+          version = tag.lstrip("v")
+
+          m_ver = re.search(r'^\s*version\s+"([^"]+)"', content, re.M)
+          current_ver = m_ver.group(1) if m_ver else ""
+          if version == current_ver:
+              print(f"Already up to date ({version})")
+              sys.exit(0)
+
+          assets = {a["name"]: a for a in release.get("assets", [])}
+          sums_asset = assets.get("SHA256SUMS.txt")
+          if not sums_asset:
+              raise RuntimeError(f"SHA256SUMS.txt missing in release {tag}")
+
+          with urllib.request.urlopen(sums_asset["browser_download_url"], timeout=30) as resp:
+              sums_text = resp.read().decode("utf-8")
+
+          checksums = {}
+          for line in sums_text.splitlines():
+              parts = line.strip().split()
+              if len(parts) >= 2:
+                  checksums[parts[1].lstrip("*")] = parts[0]
+
+          # Support both experimental and future stable macOS DMG naming
+          suffix = None
+          for cand in ("-experimental.dmg", ".dmg"):
+              arm_name = f"MisterDownloadManager-{version}-macos-arm64{cand}"
+              x64_name = f"MisterDownloadManager-{version}-macos-x86_64{cand}"
+              if arm_name in checksums and x64_name in checksums:
+                  suffix = cand
+                  arm_sha = checksums[arm_name]
+                  x64_sha = checksums[x64_name]
+                  break
+
+          if not suffix:
+              raise RuntimeError(f"Matching macOS arm64/x86_64 DMGs not found in SHA256SUMS.txt for {tag}")
+
+          updated = re.sub(r'(^\s*version\s+)"[^"]+"', rf'\1"{version}"', content, count=1, flags=re.M)
+          updated = re.sub(r'(sha256\s+arm:\s+)"[0-9a-f]{64}"', rf'\1"{arm_sha}"', updated, count=1)
+          updated = re.sub(r'(intel:\s+)"[0-9a-f]{64}"', rf'\1"{x64_sha}"', updated, count=1)
+          updated = re.sub(
+              r'(url\s+)"https://github\.com/anefzaoui/misterdownloadmanager/releases/download/v#\{version\}/MisterDownloadManager-#\{version\}-macos-#\{arch\}[^"]*"',
+              rf'\1"https://github.com/anefzaoui/misterdownloadmanager/releases/download/v#{{version}}/MisterDownloadManager-#{{version}}-macos-#{{arch}}{suffix}"',
+              updated,
+              count=1,
+          )
+
+          cask_path.write_text(updated, encoding="utf-8")
+          print(f"Updated mister-download-manager: {current_ver} -> {version} (suffix={suffix})")
+          PY
+
+      - name: Commit and push if changed
+        run: |
+          if [ -n "$(git status --porcelain Casks/mister-download-manager.rb)" ]; then
+            NEW_VER=$(grep -E '^\s*version "' Casks/mister-download-manager.rb | head -n 1 | cut -d'"' -f2)
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add Casks/mister-download-manager.rb
+            git commit -m "mister-download-manager ${NEW_VER}"
+            git push
+          else
+            echo "No changes to commit."
+          fi
